@@ -1,5 +1,0 @@
-+                    # OEM importer appends text only after seeing the sixth
-+from six import moves
-+x = six.StringIO()
-+from future import standard_library
-+futureproof = True
