@@ -267,163 +267,163 @@ SAFE_UPLOAD_PLAN = UPLOAD_PLAN
 # so that callers never need manual shift/mask operations.
 #
 # Channel record layout (48 bytes):
-#   Byte 0  – channel_type:2 | rx_tx:2 | id_select:1 | dmr_mode:1
-#             | time_slot:1 | digital_monitor:1
-#   Byte 1  – color_code:4 | scramble:4
-#   Byte 2  – unknown2a:1 | power:1 | tot:6
-#   Byte 3  – scan_add:1 | call_priority:2 | tx_priority:2 | tail_tone:3
-#   Byte 4  – bandwidth:2 | amfm:2 | ctdcs_select:3 | unknown4a:1
-#   Bytes 5-8   – rxfreq   (ul32, frequency / 10)
-#   Bytes 9-12  – txfreq   (ul32, frequency / 10)
-#   Bytes 13-14 – rxtone   (ul16, encoded CTCSS/DCS)
-#   Bytes 15-16 – txtone   (ul16, encoded CTCSS/DCS)
-#   Bytes 17-18 – contact_index (ul16)
-#   Byte 19     – rx_group_index (u8)
-#   Bytes 20-21 – encryption_index (ul16)
-#   Bytes 22-25 – channel_id (ul32, BCD-encoded)
-#   Bytes 26-29 – signaling_id (ul32, lower 24 bits used)
-#   Bytes 30-31 – reserved
-#   Bytes 32-47 – name (char[16], GBK-encoded, 0xFF padded)
 _CHANNEL_STRUCT_BODY = """
+  // Byte 0  – channel_type:2 | rx_tx:2 | id_select:1 | dmr_mode:1
+  //           | time_slot:1 | digital_monitor:1
   u8 channel_type:2,
      rx_tx:2,
      id_select:1,
      dmr_mode:1,
      time_slot:1,
      digital_monitor:1;
+  // Byte 1  – color_code:4 | scramble:4
   u8 color_code:4,
      scramble:4;
+  // Byte 2  – unknown2a:1 | power:1 | tot:6
   u8 unknown2a:1,
      power:1,
      tot:6;
+  // Byte 3  – scan_add:1 | call_priority:2 | tx_priority:2 | tail_tone:3
   u8 scan_add:1,
      call_priority:2,
      tx_priority:2,
      tail_tone:3;
+  // Byte 4  – bandwidth:2 | amfm:2 | ctdcs_select:3 | unknown4a:1
   u8 bandwidth:2,
      amfm:2,
      ctdcs_select:3,
      unknown4a:1;
+  // Bytes 5-8   – rxfreq   (ul32, frequency / 10)
   ul32 rxfreq;
+  // Bytes 9-12  – txfreq   (ul32, frequency / 10)
   ul32 txfreq;
+  // Bytes 13-14 – rxtone   (ul16, encoded CTCSS/DCS)
   ul16 rxtone;
+  // Bytes 15-16 – txtone   (ul16, encoded CTCSS/DCS)
   ul16 txtone;
+  // Bytes 17-18 – contact_index (ul16)
   ul16 contact_index;
+  // Byte 19     – rx_group_index (u8)
   u8 rx_group_index;
+  // Bytes 20-21 – encryption_index (ul16)
   ul16 encryption_index;
+  // Bytes 22-25 – channel_id (ul32, BCD-encoded)
   ul32 channel_id;
+  // Bytes 26-29 – signaling_id (ul32, lower 24 bits used)
   ul32 signaling_id;
+  // Bytes 30-31 – reserved
   u8 unknown30;
   u8 unknown31;
+  // Bytes 32-47 – name (char[16], GBK-encoded, 0xFF padded)
   char name[16];
 """
 
 # Contact record layout (21 bytes):
-#   Byte 0      – contact_type  (u8: 0=Private, 1=Group, 2=All Call)
-#   Bytes 1-4   – contact_id    (ul32, BCD-encoded)
-#   Bytes 5-20  – name          (char[16], GBK-encoded, 0xFF padded)
 _CONTACT_STRUCT_BODY = """
+  // Byte 0      – contact_type  (u8: 0=Private, 1=Group, 2=All Call)
   u8 contact_type;
+  // Bytes 1-4   – contact_id    (ul32, BCD-encoded)
   ul32 contact_id;
+  // Bytes 5-20  – name          (char[16], GBK-encoded, 0xFF padded)
   char name[16];
 """
 
 # Zone record layout (520 bytes):
-#   Bytes 0-1    – channel_a  (ul16, default channel A, zero-based index)
-#   Bytes 2-3    – channel_b  (ul16, default channel B, zero-based index)
-#   Bytes 4-19   – name       (char[16], GBK-encoded, 0xFF padded)
-#   Bytes 20-519 – members    (ul16[250], channel indices, 0xFFFF = unused)
 _ZONE_STRUCT_BODY = """
+  // Bytes 0-1    – channel_a  (ul16, default channel A, zero-based index)
   ul16 channel_a;
+  // Bytes 2-3    – channel_b  (ul16, default channel B, zero-based index)
   ul16 channel_b;
+  // Bytes 4-19   – name       (char[16], GBK-encoded, 0xFF padded)
   char name[16];
+  // Bytes 20-519 – members    (ul16[250], channel indices, 0xFFFF = unused)
   ul16 members[250];
 """
 
 # FM broadcast record layout (48 bytes):
-#   Byte 0      – fm_range     (u8: 0=64-108MHz, 1=2-30MHz, etc.)
-#   Bytes 1-2   – fm_freq      (ul16, broadcast freq / 10)
-#   Byte 3      – sw_demod     (u8)
-#   Byte 4      – sw_step      (u8)
-#   Byte 5      – sw_bw        (u8)
-#   Byte 6      – sw_agc       (u8)
-#   Bytes 7-8   – sw_bfo       (ul16, stored as value + 32768)
-#   Bytes 9-10  – sw_freq      (ul16, SW freq / 1000)
-#   Byte 11     – unknown
-#   Byte 12     – mw_demod     (u8)
-#   Byte 13     – mw_step      (u8)
-#   Byte 14     – mw_bw        (u8)
-#   Byte 15     – mw_agc       (u8)
-#   Bytes 16-17 – mw_bfo       (ul16, stored as value + 32768)
-#   Bytes 18-19 – mw_freq      (ul16, MW freq)
-#   Byte 20     – unknown
-#   Byte 21     – lw_demod     (u8)
-#   Byte 22     – lw_step      (u8)
-#   Byte 23     – lw_bw        (u8)
-#   Byte 24     – lw_agc       (u8)
-#   Bytes 25-26 – lw_bfo       (ul16, stored as value + 32768)
-#   Bytes 27-28 – lw_freq      (ul16, LW freq)
-#   Byte 29     – unknown
-#   Bytes 30-45 – alias        (char[16], GBK-encoded, 0xFF padded)
-#   Bytes 46-47 – unknown
 _FM_STRUCT_BODY = """
+  // Byte 0      – fm_range     (u8: 0=64-108MHz, 1=2-30MHz, etc.)
   u8 fm_range;
+  // Bytes 1-2   – fm_freq      (ul16, broadcast freq / 10)
   ul16 fm_freq;
+  // Byte 3      – sw_demod     (u8)
   u8 sw_demod;
+  // Byte 4      – sw_step      (u8)
   u8 sw_step;
+  // Byte 5      – sw_bw        (u8)
   u8 sw_bw;
+  // Byte 6      – sw_agc       (u8)
   u8 sw_agc;
+  // Bytes 7-8   – sw_bfo       (ul16, stored as value + 32768)
   ul16 sw_bfo;
+  // Bytes 9-10  – sw_freq      (ul16, SW freq / 1000)
   ul16 sw_freq;
+  // Byte 11     – unknown
   u8 unknown11;
+  // Byte 12     – mw_demod     (u8)
   u8 mw_demod;
+  // Byte 13     – mw_step      (u8)
   u8 mw_step;
+  // Byte 14     – mw_bw        (u8)
   u8 mw_bw;
+  // Byte 15     – mw_agc       (u8)
   u8 mw_agc;
+  // Bytes 16-17 – mw_bfo       (ul16, stored as value + 32768)
   ul16 mw_bfo;
+  // Bytes 18-19 – mw_freq      (ul16, MW freq)
   ul16 mw_freq;
+  // Byte 20     – unknown
   u8 unknown20;
+  // Byte 21     – lw_demod     (u8)
   u8 lw_demod;
+  // Byte 22     – lw_step      (u8)
   u8 lw_step;
+  // Byte 23     – lw_bw        (u8)
   u8 lw_bw;
+  // Byte 24     – lw_agc       (u8)
   u8 lw_agc;
+  // Bytes 25-26 – lw_bfo       (ul16, stored as value + 32768)
   ul16 lw_bfo;
+  // Bytes 27-28 – lw_freq      (ul16, LW freq)
   ul16 lw_freq;
+  // Byte 29     – unknown
   u8 unknown29;
+  // Bytes 30-45 – alias        (char[16], GBK-encoded, 0xFF padded)
   char alias[16];
+  // Bytes 46-47 – unknown
   u8 unknown46;
   u8 unknown47;
 """
 
 # SMS preset record layout (256 bytes):
-#   Byte 0       – status   (u8: 0x00=valid, 0xFF=blank)
-#   Bytes 1-55   – reserved (0xFF)
-#   Bytes 56-215 – text     (char[160], GBK-encoded, 0xFF padded)
-#   Bytes 216-255– padding  (0xFF)
 _SMS_STRUCT_BODY = """
+  // Byte 0       – status   (u8: 0x00=valid, 0xFF=blank)
   u8 status;
+  // Bytes 1-55   – reserved (0xFF)
   u8 reserved[55];
+  // Bytes 56-215 – text     (char[160], GBK-encoded, 0xFF padded)
   char text[160];
+  // Bytes 216-255– padding  (0xFF)
   u8 padding[40];
 """
 
 # TG list / group record layout (80 bytes):
-#   Bytes 0-15  – name     (char[16], GBK-encoded, 0xFF padded)
-#   Bytes 16-79 – members  (ul16[32], contact indices, 0xFFFF = unused)
 _GROUP_STRUCT_BODY = """
+  // Bytes 0-15  – name     (char[16], GBK-encoded, 0xFF padded)
   char name[16];
+  // Bytes 16-79 – members  (ul16[32], contact indices, 0xFFFF = unused)
   ul16 members[32];
 """
 
 # Encryption record layout (48 bytes):
-#   Byte 0      – slot_number  (u8, 1-based slot ID)
-#   Byte 1      – enc_type     (u8: 0=ARC, 1=AES-128, 2=AES-256)
-#   Bytes 2-15  – name         (char[14], GBK-encoded, 0xFF padded)
-#   Bytes 16-47 – key          (u8[32], encryption key, 0xFF padded)
 _ENCRYPT_STRUCT_BODY = """
+  // Byte 0      – slot_number  (u8, 1-based slot ID)
   u8 slot_number;
+  // Byte 1      – enc_type     (u8: 0=ARC, 1=AES-128, 2=AES-256)
   u8 enc_type;
+  // Bytes 2-15  – name         (char[14], GBK-encoded, 0xFF padded)
   char name[14];
+  // Bytes 16-47 – key          (u8[32], encryption key, 0xFF padded)
   u8 key[32];
 """
 
