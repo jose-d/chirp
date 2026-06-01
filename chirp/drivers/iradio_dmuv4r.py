@@ -131,6 +131,30 @@ FM_UI_FIELDS = (
     ("list", "fm_lw_agc", "LW AGC"),
     ("bfo", "fm_lw_bfo", "LW BFO"),
 )
+# Map FM setting field names to bitwise struct field names.
+_FM_STRUCT_FIELDS = {
+    "fm_range": "fm_range",
+    "fm_freq": "fm_freq",
+    "fm_sw_demod": "sw_demod",
+    "fm_sw_step": "sw_step",
+    "fm_sw_bw": "sw_bw",
+    "fm_sw_agc": "sw_agc",
+    "fm_sw_bfo": "sw_bfo",
+    "fm_sw_freq": "sw_freq",
+    "fm_mw_demod": "mw_demod",
+    "fm_mw_step": "mw_step",
+    "fm_mw_bw": "mw_bw",
+    "fm_mw_agc": "mw_agc",
+    "fm_mw_bfo": "mw_bfo",
+    "fm_mw_freq": "mw_freq",
+    "fm_lw_demod": "lw_demod",
+    "fm_lw_step": "lw_step",
+    "fm_lw_bw": "lw_bw",
+    "fm_lw_agc": "lw_agc",
+    "fm_lw_bfo": "lw_bfo",
+    "fm_lw_freq": "lw_freq",
+    "fm_alias": "alias",
+}
 CONTACT_TYPES = ["Disabled", "Private", "Group", "All Call"]
 LOCAL_CONTACT_IMPORT_MODES = ["Disabled", "Replace", "Append"]
 LOCAL_CONTACT_TYPE_ALIASES = {
@@ -294,16 +318,155 @@ _CHANNEL_STRUCT_BODY = """
   char name[16];
 """
 
-MEM_FORMAT = (
+# Contact record layout (21 bytes):
+#   Byte 0      – contact_type  (u8: 0=Private, 1=Group, 2=All Call)
+#   Bytes 1-4   – contact_id    (ul32, BCD-encoded)
+#   Bytes 5-20  – name          (char[16], GBK-encoded, 0xFF padded)
+_CONTACT_STRUCT_BODY = """
+  u8 contact_type;
+  ul32 contact_id;
+  char name[16];
+"""
+
+# Zone record layout (520 bytes):
+#   Bytes 0-1    – channel_a  (ul16, default channel A, zero-based index)
+#   Bytes 2-3    – channel_b  (ul16, default channel B, zero-based index)
+#   Bytes 4-19   – name       (char[16], GBK-encoded, 0xFF padded)
+#   Bytes 20-519 – members    (ul16[250], channel indices, 0xFFFF = unused)
+_ZONE_STRUCT_BODY = """
+  ul16 channel_a;
+  ul16 channel_b;
+  char name[16];
+  ul16 members[250];
+"""
+
+# FM broadcast record layout (48 bytes):
+#   Byte 0      – fm_range     (u8: 0=64-108MHz, 1=2-30MHz, etc.)
+#   Bytes 1-2   – fm_freq      (ul16, broadcast freq / 10)
+#   Byte 3      – sw_demod     (u8)
+#   Byte 4      – sw_step      (u8)
+#   Byte 5      – sw_bw        (u8)
+#   Byte 6      – sw_agc       (u8)
+#   Bytes 7-8   – sw_bfo       (ul16, stored as value + 32768)
+#   Bytes 9-10  – sw_freq      (ul16, SW freq / 1000)
+#   Byte 11     – unknown
+#   Byte 12     – mw_demod     (u8)
+#   Byte 13     – mw_step      (u8)
+#   Byte 14     – mw_bw        (u8)
+#   Byte 15     – mw_agc       (u8)
+#   Bytes 16-17 – mw_bfo       (ul16, stored as value + 32768)
+#   Bytes 18-19 – mw_freq      (ul16, MW freq)
+#   Byte 20     – unknown
+#   Byte 21     – lw_demod     (u8)
+#   Byte 22     – lw_step      (u8)
+#   Byte 23     – lw_bw        (u8)
+#   Byte 24     – lw_agc       (u8)
+#   Bytes 25-26 – lw_bfo       (ul16, stored as value + 32768)
+#   Bytes 27-28 – lw_freq      (ul16, LW freq)
+#   Byte 29     – unknown
+#   Bytes 30-45 – alias        (char[16], GBK-encoded, 0xFF padded)
+#   Bytes 46-47 – unknown
+_FM_STRUCT_BODY = """
+  u8 fm_range;
+  ul16 fm_freq;
+  u8 sw_demod;
+  u8 sw_step;
+  u8 sw_bw;
+  u8 sw_agc;
+  ul16 sw_bfo;
+  ul16 sw_freq;
+  u8 unknown11;
+  u8 mw_demod;
+  u8 mw_step;
+  u8 mw_bw;
+  u8 mw_agc;
+  ul16 mw_bfo;
+  ul16 mw_freq;
+  u8 unknown20;
+  u8 lw_demod;
+  u8 lw_step;
+  u8 lw_bw;
+  u8 lw_agc;
+  ul16 lw_bfo;
+  ul16 lw_freq;
+  u8 unknown29;
+  char alias[16];
+  u8 unknown46;
+  u8 unknown47;
+"""
+
+# SMS preset record layout (256 bytes):
+#   Byte 0       – status   (u8: 0x00=valid, 0xFF=blank)
+#   Bytes 1-55   – reserved (0xFF)
+#   Bytes 56-215 – text     (char[160], GBK-encoded, 0xFF padded)
+#   Bytes 216-255– padding  (0xFF)
+_SMS_STRUCT_BODY = """
+  u8 status;
+  u8 reserved[55];
+  char text[160];
+  u8 padding[40];
+"""
+
+# TG list / group record layout (80 bytes):
+#   Bytes 0-15  – name     (char[16], GBK-encoded, 0xFF padded)
+#   Bytes 16-79 – members  (ul16[32], contact indices, 0xFFFF = unused)
+_GROUP_STRUCT_BODY = """
+  char name[16];
+  ul16 members[32];
+"""
+
+# Encryption record layout (48 bytes):
+#   Byte 0      – slot_number  (u8, 1-based slot ID)
+#   Byte 1      – enc_type     (u8: 0=ARC, 1=AES-128, 2=AES-256)
+#   Bytes 2-15  – name         (char[14], GBK-encoded, 0xFF padded)
+#   Bytes 16-47 – key          (u8[32], encryption key, 0xFF padded)
+_ENCRYPT_STRUCT_BODY = """
+  u8 slot_number;
+  u8 enc_type;
+  char name[14];
+  u8 key[32];
+"""
+
+# The memory format is built in two halves so that the zone struct
+# (whose offset varies between firmware versions) can be inserted in
+# ascending-address order between channels and contacts.
+_MEM_FORMAT_PRE_ZONE = (
     "#seekto 0x%(vfo_offset)04X;\n"
-    "struct {%(body)s} vfo[2];\n"
+    "struct {%(ch_body)s} vfo[2];\n"
     "#seekto 0x%(ch_offset)04X;\n"
-    "struct {%(body)s} channel[%(ch_count)d];\n"
+    "struct {%(ch_body)s} channel[%(ch_count)d];\n"
 ) % {
     "vfo_offset": OFFSET_VFO,
     "ch_offset": OFFSET_ALL,
-    "body": _CHANNEL_STRUCT_BODY,
+    "ch_body": _CHANNEL_STRUCT_BODY,
     "ch_count": CHANNEL_COUNT,
+}
+
+_MEM_FORMAT_POST_ZONE = (
+    "#seekto 0x%(contact_offset)04X;\n"
+    "struct {%(contact_body)s} contact[%(contact_count)d];\n"
+    "#seekto 0x%(group_offset)04X;\n"
+    "struct {%(group_body)s} group[%(group_count)d];\n"
+    "#seekto 0x%(encrypt_offset)04X;\n"
+    "struct {%(encrypt_body)s} encrypt[%(encrypt_count)d];\n"
+    "struct {%(sms_body)s} sms[%(sms_count)d];\n"
+    "#seekto 0x%(fm_offset)04X;\n"
+    "struct {%(fm_body)s} fm[%(fm_count)d];\n"
+) % {
+    "contact_offset": OFFSET_CONTACT,
+    "contact_body": _CONTACT_STRUCT_BODY,
+    "contact_count": CONTACT_COUNT,
+    "group_offset": OFFSET_GROUP,
+    "group_body": _GROUP_STRUCT_BODY,
+    "group_count": GROUP_COUNT,
+    "encrypt_offset": OFFSET_ENCRYPT,
+    "encrypt_body": _ENCRYPT_STRUCT_BODY,
+    "encrypt_count": ENCRYPTION_COUNT,
+    "sms_body": _SMS_STRUCT_BODY,
+    "sms_count": SMS_PRESET_COUNT,
+    "fm_offset": OFFSET_FM,
+    "fm_body": _FM_STRUCT_BODY,
+    "fm_count": FM_COUNT,
 }
 
 POWER_LEVELS = [
@@ -1032,7 +1195,17 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         if len(self._mmap) < MEM_SIZE:
             data = self._mmap.get(0, -1).ljust(MEM_SIZE, b"\xFF")
             self._mmap = memmap.MemoryMapBytes(data)
-        self._memobj = bitwise.parse(MEM_FORMAT, self._mmap)
+        # Detect the zone table offset (varies between firmware versions)
+        # and insert the zone struct in ascending-address order.
+        zone_abs = OFFSET_ZONE + self._zone_table_offset()
+        mem_format = (
+            _MEM_FORMAT_PRE_ZONE +
+            "#seekto 0x%04X;\n"
+            "struct {%s} zone[%d];\n" % (
+                zone_abs, _ZONE_STRUCT_BODY, ZONE_COUNT) +
+            _MEM_FORMAT_POST_ZONE
+        )
+        self._memobj = bitwise.parse(mem_format, self._mmap)
         self._password_bytes = bytes(self._get_segment("cfg")[:12])
 
     def get_raw_memory(self, number):
@@ -1197,18 +1370,17 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         return cfg0
 
     def _parse_zones(self):
-        zone = self._get_segment("zone")
         zones = []
         count = self._zone_record_count()
         for index in range(count):
-            raw = self._zone_record(index, zone)
-            name = _filter_ascii(_decode_string(bytes(raw[4:20])), 16)
+            rec = self._memobj.zone[index]
+            name = _filter_ascii(
+                _decode_string(rec.name.get_raw()), 16)
             zones.append({
                 "name": name,
-                "channel_a": _u16le(raw, 0),
-                "channel_b": _u16le(raw, 2),
-                "members": self._zone_record_members(raw),
-                "raw": bytes(raw),
+                "channel_a": int(rec.channel_a),
+                "channel_b": int(rec.channel_b),
+                "members": self._zone_record_members(rec),
             })
         return zones
 
@@ -1268,41 +1440,46 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         zone[base:base + ZONE_RECORD_SIZE] = bytes(record[:ZONE_RECORD_SIZE])
         self._set_segment("zone", zone)
 
-    def _zone_record_members(self, raw):
+    def _zone_record_members(self, rec):
+        """Return the list of valid channel indices from a zone record.
+
+        *rec* is a bitwise zone struct with a ``members[250]`` array.
+        """
         members = []
         for member in range(ZONE_MEMBERS):
-            value = _u16le(raw, 20 + (member * 2))
+            value = int(rec.members[member])
             if value < CHANNEL_COUNT:
                 members.append(value)
         return members
 
     def _zone_members(self, index):
-        return self._zone_record_members(self._zone_record(index))
+        return self._zone_record_members(self._memobj.zone[index])
 
     def _set_zone_members(self, index, members):
-        record = self._zone_record(index)
-        record[20:20 + (ZONE_MEMBERS * 2)] = b"\xFF" * (ZONE_MEMBERS * 2)
-        for member_index, member in enumerate(members[:ZONE_MEMBERS]):
+        rec = self._memobj.zone[index]
+        for i in range(ZONE_MEMBERS):
+            rec.members[i] = 0xFFFF
+        for i, member in enumerate(members[:ZONE_MEMBERS]):
             if 0 <= member < CHANNEL_COUNT:
-                _set_u16le(record, 20 + (member_index * 2), member)
+                rec.members[i] = member
         if members:
-            default_a = _u16le(record, 0)
-            default_b = _u16le(record, 2)
+            default_a = int(rec.channel_a)
+            default_b = int(rec.channel_b)
             if default_a not in members:
                 default_a = members[0]
             if default_b not in members:
                 default_b = members[1] if len(members) > 1 else members[0]
-            _set_u16le(record, 0, default_a)
-            _set_u16le(record, 2, default_b)
+            rec.channel_a = default_a
+            rec.channel_b = default_b
         else:
-            _set_u16le(record, 0, 0xFFFF)
-            _set_u16le(record, 2, 0xFFFF)
-        self._write_zone_record(index, record)
+            rec.channel_a = 0xFFFF
+            rec.channel_b = 0xFFFF
 
     def _set_zone_name(self, index, name):
-        record = self._zone_record(index)
-        record[4:20] = _encode_string(name, 16)
-        self._write_zone_record(index, record)
+        rec = self._memobj.zone[index]
+        encoded = _encode_string(name, 16)
+        for i, byte in enumerate(encoded):
+            rec.name[i] = byte
 
     def _zone_default_channel_number(self, value):
         if 0 <= value < CHANNEL_COUNT:
@@ -1370,23 +1547,20 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         return data
 
     def _parse_contacts(self):
-        contact = self._get_segment("contact")
         contacts = []
         for index in range(CONTACT_COUNT):
-            base = index * CONTACT_RECORD_SIZE
-            if base + CONTACT_RECORD_SIZE > len(contact):
-                break
-            contact_type = contact[base]
+            rec = self._memobj.contact[index]
+            contact_type = int(rec.contact_type)
             if contact_type > 2:
                 continue
             name = _filter_ascii(
-                _decode_string(bytes(contact[base + 5:base + 21])), 16)
+                _decode_string(rec.name.get_raw()), 16)
             if index == 0:
                 contact_id = MAX_DMR_ID
                 if not name:
                     name = "All Call"
             else:
-                contact_id = _bcd_to_int(_u32le(contact, base + 1))
+                contact_id = _bcd_to_int(int(rec.contact_id))
                 if contact_id > 99999999:
                     continue
             contacts.append({
@@ -1621,15 +1795,14 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
             str(group[prefix + "name"].value).rstrip(), 16)
 
     def _parse_groups(self):
-        group = self._get_segment("group")
         groups = []
         for index in range(GROUP_COUNT):
-            base = index * GROUP_RECORD_SIZE
+            rec = self._memobj.group[index]
             name = _filter_ascii(_decode_string(
-                bytes(group[base:base + 16])), 16)
+                rec.name.get_raw()), 16)
             members = []
             for member in range(GROUP_MEMBERS):
-                value = _u16le(group, base + 16 + (member * 2))
+                value = int(rec.members[member])
                 if value < CONTACT_COUNT:
                     members.append(value)
             enabled = bool(name) or bool(members)
@@ -1707,14 +1880,13 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
             _set_u16le(group_data, base + 16 + (member_index * 2), member)
 
     def _parse_encryptions(self):
-        encrypt = self._get_segment("encrypt")
         entries = []
         for index in range(ENCRYPTION_COUNT):
-            base = index * ENCRYPTION_RECORD_SIZE
-            enc_type = encrypt[base + 1]
+            rec = self._memobj.encrypt[index]
+            enc_type = int(rec.enc_type)
             name = _filter_ascii(_decode_string(
-                bytes(encrypt[base + 2:base + 16])), 14)
-            key = bytes(encrypt[base + 16:base + 48])
+                rec.name.get_raw()), 14)
+            key = bytes(rec.key)
             enabled = enc_type <= 2 and (bool(name) or not _is_blank(key))
             entries.append({
                 "slot": index,
@@ -1792,14 +1964,13 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         encrypt[base + 16:base + 48] = key[:key_len].ljust(32, b"\xFF")
 
     def _build_sms_upload(self):
-        sms = self._get_segment("sms")
         data = bytearray(b"\xFF" * (SMS_PRESET_COUNT * SMS_RECORD_SIZE))
         for index in range(SMS_PRESET_COUNT):
-            src = sms[index * SMS_RECORD_SIZE:(index + 1) * SMS_RECORD_SIZE]
+            rec = self._memobj.sms[index]
             base = index * SMS_RECORD_SIZE
-            if src[0] != 0x00:
+            if int(rec.status) != 0x00:
                 continue
-            text = _decode_string(bytes(src[56:56 + SMS_TEXT_LEN]))
+            text = _decode_string(rec.text.get_raw())
             if text:
                 data[base] = 0x00
                 data[base + 1:base + 56] = b"\xFF" * 55
@@ -2815,69 +2986,72 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
                 self._global_contacts_path(), autopad=False,
                 charset=chirp_common.CHARSET_ASCII)))
 
-    def _append_fm_record_field(self, group, fm, index, blank, field):
-        base = index * FM_RECORD_SIZE
+    def _fm_record_blank(self, index):
+        """Check whether FM record *index* is all 0x00/0xFF."""
+        offset = OFFSET_FM + (index * FM_RECORD_SIZE)
+        return _is_blank(self._mmap.get(offset, FM_RECORD_SIZE))
+
+    def _append_fm_record_field(self, group, rec, index, blank, field):
         kind = field[0]
         field_name = field[1]
         name = "%s_%02d" % (field_name, index)
         label = "FM %02d %s" % (index + 1, field[2])
+        struct_field = _FM_STRUCT_FIELDS.get(field_name)
 
         if kind == "list":
-            offset, choices = FM_LIST_FIELDS[field_name]
+            _offset, choices = FM_LIST_FIELDS[field_name]
             self._append_list_setting(group, name, label, choices,
-                                      fm[base + offset])
+                                      int(getattr(rec, struct_field)))
         elif kind == "broadcast_freq":
-            offset, _multiplier = FM_FREQ_FIELDS[field_name]
-            freq = _fm_raw_to_freq(_u16le(fm, base + offset))
+            freq = _fm_raw_to_freq(int(getattr(rec, struct_field)))
             group.append(RadioSetting(
                 name, label,
                 RadioSettingValueString(
                     0, 8, ("" if not freq else "%.1f" % freq),
                     autopad=False, charset="0123456789.")))
         elif kind == "freq":
-            offset, divisor = FM_FREQ_FIELDS[field_name]
+            _offset, divisor = FM_FREQ_FIELDS[field_name]
             precision, length = field[3:]
             group.append(RadioSetting(
                 name, label,
                 RadioSettingValueString(
                     0, length,
-                    _fm_freq_text(_u16le(fm, base + offset),
+                    _fm_freq_text(int(getattr(rec, struct_field)),
                                   divisor, precision),
                     autopad=False, charset="0123456789.")))
         elif kind == "alias":
-            offset = FM_ALIAS_OFFSET
             group.append(RadioSetting(
                 name, label,
                 RadioSettingValueString(
                     0, FM_ALIAS_LENGTH,
                     _filter_ascii(_decode_string(
-                        bytes(fm[base + offset:base + offset +
-                                 FM_ALIAS_LENGTH])), FM_ALIAS_LENGTH),
+                        rec.alias.get_raw()), FM_ALIAS_LENGTH),
                     autopad=False)))
         elif kind == "bfo":
-            offset = FM_BFO_FIELDS[field_name]
+            raw = 0 if blank else int(getattr(rec, struct_field))
             self._append_int_setting(group, name, label,
-                                     _fm_bfo(fm, base + offset, blank),
+                                     raw - 32768,
                                      -32768, 32767)
 
-    def _append_fm_record_settings(self, group, fm, index):
-        base = index * FM_RECORD_SIZE
-        blank = _is_blank(fm[base:base + FM_RECORD_SIZE])
+    def _append_fm_record_settings(self, group, index):
+        rec = self._memobj.fm[index]
+        blank = self._fm_record_blank(index)
         for field in FM_UI_FIELDS:
-            self._append_fm_record_field(group, fm, index, blank, field)
+            self._append_fm_record_field(group, rec, index, blank, field)
 
-    def _append_fm_settings(self, group, fm):
+    def _append_fm_settings(self, group):
         self._append_fm_radio_channel_setting(group)
         for index in range(FM_COUNT):
-            self._append_fm_record_settings(group, fm, index)
+            self._append_fm_record_settings(group, index)
 
-    def _append_sms_preset_settings(self, group, sms):
+    def _append_sms_preset_settings(self, group):
         for index in range(SMS_PRESET_COUNT):
-            base = index * SMS_RECORD_SIZE
-            if sms[base] not in (0x00, 0xFF):
+            rec = self._memobj.sms[index]
+            status = int(rec.status)
+            if status not in (0x00, 0xFF):
                 continue
             text = _filter_ascii(
-                _decode_string(bytes(sms[base + 56:base + 56 + SMS_TEXT_LEN])),
+                _decode_string(rec.text.get_raw()),
                 SMS_TEXT_LEN)
             group.append(RadioSetting(
                 "sms_preset_%02d" % index,
@@ -2887,8 +3061,6 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
 
     def get_settings(self):
         cfg = self._get_segment("cfg")
-        fm = self._get_segment("fm")
-        sms = self._get_segment("sms")
 
         identity = RadioSettingGroup("radio_identity", "Radio Identity")
         passwords = RadioSettingGroup("passwords", "Passwords")
@@ -2935,8 +3107,8 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         self._append_encryption_settings(encrypt_group)
         self._append_poweron_image_settings(poweron_group)
         self._append_global_contact_settings(global_group)
-        self._append_fm_settings(fm_group, fm)
-        self._append_sms_preset_settings(sms_group, sms)
+        self._append_fm_settings(fm_group)
+        self._append_sms_preset_settings(sms_group)
 
         return RadioSettings(
             identity,
