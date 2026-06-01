@@ -3774,6 +3774,7 @@ class TestIradioDMUV4R(unittest.TestCase):
         zone[next_base + 4:next_base +
              20] = iradio_dmuv4r._encode_string("Zone-002", 16)
         radio._set_segment("zone", zone)
+        radio.process_mmap()
 
         zones = radio._parse_zones()
         self.assertEqual("IC2026", zones[0]["name"])
@@ -3793,6 +3794,7 @@ class TestIradioDMUV4R(unittest.TestCase):
         zone[base + 4:base + 20] = iradio_dmuv4r._encode_string("LEGACY", 16)
         iradio_dmuv4r._set_u16le(zone, base + 20, 11)
         radio._set_segment("zone", zone)
+        radio.process_mmap()
 
         zones = radio._parse_zones()
         self.assertEqual("LEGACY", zones[0]["name"])
