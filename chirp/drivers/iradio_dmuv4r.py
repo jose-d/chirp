@@ -15,7 +15,7 @@ import io
 import logging
 import os
 
-from chirp import checksum, chirp_common, directory, errors, memmap
+from chirp import bitwise, checksum, chirp_common, directory, errors, memmap
 from chirp.settings import (
     RadioSetting,
     RadioSettingGroup,
@@ -237,6 +237,74 @@ UPLOAD_PLAN = (
 )
 
 SAFE_UPLOAD_PLAN = UPLOAD_PLAN
+
+# Declarative memory map for the 48-byte channel record.  The bitwise
+# module parses this C-like definition and provides named field access
+# so that callers never need manual shift/mask operations.
+#
+# Channel record layout (48 bytes):
+#   Byte 0  – channel_type:2 | rx_tx:2 | id_select:1 | dmr_mode:1
+#             | time_slot:1 | digital_monitor:1
+#   Byte 1  – color_code:4 | scramble:4
+#   Byte 2  – unknown2a:1 | power:1 | tot:6
+#   Byte 3  – scan_add:1 | call_priority:2 | tx_priority:2 | tail_tone:3
+#   Byte 4  – bandwidth:2 | amfm:2 | ctdcs_select:3 | unknown4a:1
+#   Bytes 5-8   – rxfreq   (ul32, frequency / 10)
+#   Bytes 9-12  – txfreq   (ul32, frequency / 10)
+#   Bytes 13-14 – rxtone   (ul16, encoded CTCSS/DCS)
+#   Bytes 15-16 – txtone   (ul16, encoded CTCSS/DCS)
+#   Bytes 17-18 – contact_index (ul16)
+#   Byte 19     – rx_group_index (u8)
+#   Bytes 20-21 – encryption_index (ul16)
+#   Bytes 22-25 – channel_id (ul32, BCD-encoded)
+#   Bytes 26-29 – signaling_id (ul32, lower 24 bits used)
+#   Bytes 30-31 – reserved
+#   Bytes 32-47 – name (char[16], GBK-encoded, 0xFF padded)
+_CHANNEL_STRUCT_BODY = """
+  u8 channel_type:2,
+     rx_tx:2,
+     id_select:1,
+     dmr_mode:1,
+     time_slot:1,
+     digital_monitor:1;
+  u8 color_code:4,
+     scramble:4;
+  u8 unknown2a:1,
+     power:1,
+     tot:6;
+  u8 scan_add:1,
+     call_priority:2,
+     tx_priority:2,
+     tail_tone:3;
+  u8 bandwidth:2,
+     amfm:2,
+     ctdcs_select:3,
+     unknown4a:1;
+  ul32 rxfreq;
+  ul32 txfreq;
+  ul16 rxtone;
+  ul16 txtone;
+  ul16 contact_index;
+  u8 rx_group_index;
+  ul16 encryption_index;
+  ul32 channel_id;
+  ul32 signaling_id;
+  u8 unknown30;
+  u8 unknown31;
+  char name[16];
+"""
+
+MEM_FORMAT = (
+    "#seekto 0x%(vfo_offset)04X;\n"
+    "struct {%(body)s} vfo[2];\n"
+    "#seekto 0x%(ch_offset)04X;\n"
+    "struct {%(body)s} channel[%(ch_count)d];\n"
+) % {
+    "vfo_offset": OFFSET_VFO,
+    "ch_offset": OFFSET_ALL,
+    "body": _CHANNEL_STRUCT_BODY,
+    "ch_count": CHANNEL_COUNT,
+}
 
 POWER_LEVELS = [
     # The OEM CPS exposes only Low/High. Absolute RF watts vary by band/model
@@ -964,6 +1032,7 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         if len(self._mmap) < MEM_SIZE:
             data = self._mmap.get(0, -1).ljust(MEM_SIZE, b"\xFF")
             self._mmap = memmap.MemoryMapBytes(data)
+        self._memobj = bitwise.parse(MEM_FORMAT, self._mmap)
         self._password_bytes = bytes(self._get_segment("cfg")[:12])
 
     def get_raw_memory(self, number):
@@ -1003,6 +1072,49 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
 
     def _vfo_index(self, number):
         return 0 if self._special_name(number) == "VFO-A" else 1
+
+    def _get_record(self, number):
+        """Return the bitwise channel record for *number*.
+
+        For regular channels (1..CHANNEL_COUNT) the record comes from
+        ``self._memobj.channel[]``; for VFO-A / VFO-B it comes from
+        ``self._memobj.vfo[]``.
+        """
+        if isinstance(number, str) or number < 0:
+            return self._memobj.vfo[self._vfo_index(number)]
+        return self._memobj.channel[number - 1]
+
+    def _record_name_bytes(self, number):
+        """Return the raw 16-byte name field for channel *number*."""
+        if isinstance(number, str) or number < 0:
+            offset = OFFSET_VFO + self._vfo_index(number) * CHANNEL_RECORD_SIZE
+        else:
+            offset = self._channel_offset(number)
+        return bytes(self._mmap.get(offset + 32, 16))
+
+    def _set_record_name(self, number, name):
+        """Write the 16-byte GBK-encoded name for channel *number*."""
+        if isinstance(number, str) or number < 0:
+            offset = OFFSET_VFO + self._vfo_index(number) * CHANNEL_RECORD_SIZE
+        else:
+            offset = self._channel_offset(number)
+        self._mmap.set(offset + 32, _encode_string(name, 16))
+
+    def _blank_record(self, number):
+        """Overwrite the 48-byte channel record with 0xFF."""
+        if isinstance(number, str) or number < 0:
+            offset = OFFSET_VFO + self._vfo_index(number) * CHANNEL_RECORD_SIZE
+        else:
+            offset = self._channel_offset(number)
+        self._mmap.set(offset, b"\xFF" * CHANNEL_RECORD_SIZE)
+
+    def _zero_record(self, number):
+        """Overwrite the 48-byte channel record with 0x00."""
+        if isinstance(number, str) or number < 0:
+            offset = OFFSET_VFO + self._vfo_index(number) * CHANNEL_RECORD_SIZE
+        else:
+            offset = self._channel_offset(number)
+        self._mmap.set(offset, b"\x00" * CHANNEL_RECORD_SIZE)
 
     def _vfo_record(self, number):
         vfo = self._get_segment("vfo")
@@ -1947,11 +2059,11 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
     def filter_name(self, name):
         return _filter_ascii(name, NAME_LEN)
 
-    def _get_analog_memory(self, mem, raw):
-        rx = _decode_tone(_u16le(raw, 13))
-        tx = _decode_tone(_u16le(raw, 15))
+    def _get_analog_memory(self, mem, rec):
+        rx = _decode_tone(int(rec.rxtone))
+        tx = _decode_tone(int(rec.txtone))
         chirp_common.split_tone_decode(mem, tx, rx)
-        band = (raw[4] >> 6) & 0x03 if raw[4] != 0xFF else 0
+        band = int(rec.bandwidth)
         if band == 1:
             mem.mode = "NFM"
         elif band == 0:
@@ -1959,19 +2071,17 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
         else:
             mem.mode = "NFM" if mem.freq >= 400000000 else "FM"
 
-    def _set_analog_memory(self, mem, raw):
+    def _set_analog_memory(self, mem, rec):
         tx, rx = chirp_common.split_tone_encode(mem)
-        rx_blank = _u16le(raw, 13)
-        tx_blank = _u16le(raw, 15)
+        rx_blank = int(rec.rxtone)
+        tx_blank = int(rec.txtone)
         if rx_blank not in (0x0000, 0xFFFF):
             rx_blank = 0x0000
         if tx_blank not in (0x0000, 0xFFFF):
             tx_blank = 0x0000
-        _set_u16le(raw, 13, _encode_tone(*rx)
-                   if rx[0] else rx_blank)
-        _set_u16le(raw, 15, _encode_tone(*tx)
-                   if tx[0] else tx_blank)
-        raw[4] = (raw[4] & 0x3F) | ((1 if mem.mode == "NFM" else 0) << 6)
+        rec.rxtone = _encode_tone(*rx) if rx[0] else rx_blank
+        rec.txtone = _encode_tone(*tx) if tx[0] else tx_blank
+        rec.bandwidth = 1 if mem.mode == "NFM" else 0
 
     def _apply_duplex(self, mem, rx_raw, tx_raw):
         mem.freq = rx_raw * 10
@@ -1987,91 +2097,110 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
             mem.duplex = "split"
             mem.offset = tx
 
-    def _decode_memory_record(self, number, raw, extd_number=None):
+    def _record_offset(self, number):
+        """Return the absolute mmap offset for channel *number*."""
+        if isinstance(number, str) or (isinstance(number, int) and number < 0):
+            return OFFSET_VFO + self._vfo_index(number) * CHANNEL_RECORD_SIZE
+        return self._channel_offset(number)
+
+    def _is_record_blank(self, number):
+        """True when the freq bytes (5..12) of channel *number* are blank."""
+        offset = self._record_offset(number) + 5
+        return _is_blank(bytes(self._mmap.get(offset, 8)))
+
+    def _decode_memory_record(self, number, rec, extd_number=None):
         mem = chirp_common.Memory()
         mem.number = number
         if extd_number:
             mem.extd_number = extd_number
-        mem.empty = _is_blank(raw[5:13])
-        channel_type = (raw[0] >> 6) & 0x03
-        is_digital = channel_type == 0
-        mem.extra = self._build_extra(raw, is_digital)
+        mem.empty = self._is_record_blank(extd_number or number)
+        is_digital = int(rec.channel_type) == 0
+        mem.extra = self._build_extra(rec, is_digital)
 
         if mem.empty:
             return mem
 
-        rx_raw = _u32le(raw, 5)
-        tx_raw = _u32le(raw, 9)
-        self._apply_duplex(mem, rx_raw, tx_raw)
+        self._apply_duplex(mem, int(rec.rxfreq), int(rec.txfreq))
 
-        mem.name = self.filter_name(_decode_string(bytes(raw[32:48])))
-        mem.power = POWER_LEVELS[1 if (raw[2] & 0x40) else 0]
-        mem.skip = "" if (raw[3] & 0x80) else "S"
+        mem.name = self.filter_name(
+            _decode_string(self._record_name_bytes(extd_number or number)))
+        mem.power = POWER_LEVELS[1 if int(rec.power) else 0]
+        mem.skip = "" if int(rec.scan_add) else "S"
 
         if is_digital:
             mem.mode = "DMR"
             mem.tmode = ""
         else:
-            self._get_analog_memory(mem, raw)
+            self._get_analog_memory(mem, rec)
 
         return mem
 
     def get_memory(self, number):
         if isinstance(number, str) or number < 0:
             name = self._special_name(number)
+            rec = self._get_record(name)
             return self._decode_memory_record(
-                SPECIAL_MEMORIES[name],
-                self._vfo_record(name),
-                extd_number=name)
-        return self._decode_memory_record(number, self._channel_data(number))
+                SPECIAL_MEMORIES[name], rec, extd_number=name)
+        rec = self._get_record(number)
+        return self._decode_memory_record(number, rec)
 
-    def _build_extra(self, raw, is_digital):
+    def _build_extra(self, rec, is_digital):
         extra = RadioSettingGroup("extra", "Extra")
-        contact_index = _u16le(raw, 17)
+        contact_index = int(rec.contact_index)
         if contact_index >= CONTACT_COUNT:
             contact_index = 0
-        rx_group_index = raw[19] if raw[19] != 0xFF else 0
+        rx_group_index = int(rec.rx_group_index)
+        if rx_group_index == 0xFF:
+            rx_group_index = 0
         if rx_group_index > GROUP_COUNT:
             rx_group_index = 0
-        encryption_index = _u16le(raw, 20)
+        encryption_index = int(rec.encryption_index)
         if encryption_index >= ENCRYPTION_SELECTOR_COUNT:
             encryption_index = 0
-        channel_id = _bcd_to_int(_u32le(raw, 22))
+        channel_id = _bcd_to_int(int(rec.channel_id))
         if channel_id > 99999999:
             channel_id = 0
-        rx_tx = (raw[0] >> 4) & 0x03
+        rx_tx = int(rec.rx_tx)
         if rx_tx >= len(CHANNEL_RXTX_CHOICES):
             rx_tx = 0
-        id_select = (raw[0] >> 3) & 0x01
-        dmr_mode = (raw[0] >> 2) & 0x01
-        time_slot = (raw[0] >> 1) & 0x01
-        digital_monitor = raw[0] & 0x01
-        color_code = (raw[1] >> 4) & 0x0F
-        if raw[1] == 0xFF:
+        id_select = int(rec.id_select)
+        dmr_mode = int(rec.dmr_mode)
+        time_slot = int(rec.time_slot)
+        digital_monitor = int(rec.digital_monitor)
+        color_code = int(rec.color_code)
+        # When byte 1 is entirely 0xFF the bitfield reads as all-ones;
+        # treat that as a sane default of color code 1.
+        if color_code == 0x0F and int(rec.scramble) == 0x0F:
             color_code = 1
-        tot = raw[2] & 0x3F if raw[2] != 0xFF else 0
-        call_priority = (raw[3] >> 5) & 0x03
+        tot = int(rec.tot)
+        # When byte 2 is 0xFF the bitfields are all-ones; reset tot.
+        if tot == 0x3F and int(rec.power) == 1 and int(rec.unknown2a) == 1:
+            tot = 0
+        call_priority = int(rec.call_priority)
         if call_priority >= len(CHANNEL_CALL_PRIORITY_CHOICES):
             call_priority = 0
-        tx_priority = (raw[3] >> 3) & 0x03
+        tx_priority = int(rec.tx_priority)
         if tx_priority >= len(CHANNEL_TX_PRIORITY_CHOICES):
             tx_priority = 0
-        tail_tone = raw[3] & 0x07
+        tail_tone = int(rec.tail_tone)
         if tail_tone >= len(CHANNEL_TAIL_TONE_CHOICES):
             tail_tone = 0
-        ctdcs_select = (raw[4] >> 1) & 0x07
+        ctdcs_select = int(rec.ctdcs_select)
         if ctdcs_select >= len(CHANNEL_CTDCS_SELECT_CHOICES):
             ctdcs_select = 0
-        amfm = (raw[4] >> 4) & 0x03
+        amfm = int(rec.amfm)
         if amfm >= len(CHANNEL_AMFM_CHOICES):
             amfm = 0
-        band = (raw[4] >> 6) & 0x03
+        band = int(rec.bandwidth)
         if band >= len(CHANNEL_BAND_CHOICES):
             band = 0
-        analog_scramble = raw[1] & 0x0F if raw[1] != 0xFF else 0
+        analog_scramble = int(rec.scramble)
+        # When byte 1 is 0xFF, scramble reads as all-ones; reset.
+        if analog_scramble == 0x0F and int(rec.color_code) == 0x0F:
+            analog_scramble = 0
         if analog_scramble >= len(CHANNEL_SCRAMBLE_CHOICES):
             analog_scramble = 0
-        signaling_id = _u32le(raw, 26) & SIGNALING_ID_MASK
+        signaling_id = int(rec.signaling_id) & SIGNALING_ID_MASK
         extras = [
             RadioSetting(
                 "raw_mode", "Raw Channel Type",
@@ -2082,7 +2211,7 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
                          RadioSettingValueList(CHANNEL_RXTX_CHOICES,
                                                current_index=rx_tx)),
             RadioSetting("scan_add", "Scan Add",
-                         RadioSettingValueBoolean(bool(raw[3] & 0x80))),
+                         RadioSettingValueBoolean(bool(int(rec.scan_add)))),
             RadioSetting("dmr_id_select", "DMR ID Select",
                          RadioSettingValueList(CHANNEL_ID_SELECT_CHOICES,
                                                current_index=id_select)),
@@ -2142,28 +2271,30 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
             extra.append(setting)
         return extra
 
-    def _base_memory_record(self, mem):
-        if isinstance(mem.number, str) or mem.number < 0:
-            try:
-                raw = self._vfo_record(mem.number)
-            except errors.InvalidMemoryLocation:
-                raw = None
-        elif 1 <= mem.number <= CHANNEL_COUNT:
-            raw = self._channel_data(mem.number)
-        else:
-            raw = None
+    def _prepare_record_for_write(self, mem):
+        """Ensure the record area is ready for writing.
 
-        if raw is not None and not _is_blank(raw[5:13]):
-            return bytearray(raw)
-        return bytearray(b"\x00" * CHANNEL_RECORD_SIZE)
+        For an empty/blank channel being programmed for the first time,
+        zero-fill the record so bitfield defaults are sane.  Returns the
+        bitwise record object.
+        """
+        number = mem.number
+        if self._is_record_blank(number):
+            self._zero_record(number)
+        return self._get_record(number)
 
     def _encode_memory_record(self, mem):
+        """Write *mem* into the mmap via the bitwise channel record."""
+        number = mem.number
+
         if mem.empty:
-            return bytearray(b"\xFF" * CHANNEL_RECORD_SIZE)
+            self._blank_record(number)
+            return
 
         is_digital = mem.mode == "DMR"
-        raw = self._base_memory_record(mem)
-        _set_u32le(raw, 5, mem.freq // 10)
+        rec = self._prepare_record_for_write(mem)
+
+        rec.rxfreq = mem.freq // 10
         if mem.duplex == "":
             txfreq = mem.freq
         elif mem.duplex == "-":
@@ -2174,20 +2305,21 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
             txfreq = mem.offset
         else:
             raise errors.RadioError("Unsupported duplex mode %r" % mem.duplex)
-        _set_u32le(raw, 9, txfreq // 10)
-        raw[0] = (raw[0] & 0x3F) | (0x00 if is_digital else 0x40)
-        raw[1] = 0x10 if raw[1] == 0xFF else raw[1]
-        raw[2] = (
-            (0x00 if raw[2] == 0xFF else raw[2]) & 0x3F) | (
-                0x40 if _is_high_power(mem.power) else 0x00)
-        raw[3] = (
-            (0x00 if raw[3] == 0xFF else raw[3]) & 0x7F) | (
-                0x80 if mem.skip != "S" else 0x00)
-        raw[4] = 0x00 if raw[4] == 0xFF else raw[4]
-        raw[32:48] = _encode_string(self.filter_name(mem.name), 16)
+        rec.txfreq = txfreq // 10
+
+        rec.channel_type = 0 if is_digital else 1
+
+        # Initialise byte-1 defaults for a fresh record (all-0xFF).
+        if int(rec.color_code) == 0x0F and int(rec.scramble) == 0x0F:
+            rec.color_code = 1
+            rec.scramble = 0
+
+        rec.power = 1 if _is_high_power(mem.power) else 0
+        rec.scan_add = 1 if mem.skip != "S" else 0
+        self._set_record_name(number, self.filter_name(mem.name))
 
         if not is_digital:
-            self._set_analog_memory(mem, raw)
+            self._set_analog_memory(mem, rec)
 
         if mem.extra:
             for setting in mem.extra:
@@ -2195,117 +2327,88 @@ class IradioDMUV4RRadio(chirp_common.CloneModeRadio,
                 value = setting.value
                 if name == "raw_mode":
                     is_digital = str(value) == "DMR"
-                    raw[0] = (raw[0] & 0x3F) | ((0 if is_digital else 1) << 6)
+                    rec.channel_type = 0 if is_digital else 1
                 elif name == "rx_tx":
-                    raw[0] = (
-                        (raw[0] & 0xCF) |
-                        (_safe_choice_index(CHANNEL_RXTX_CHOICES, value) << 4))
+                    rec.rx_tx = _safe_choice_index(
+                        CHANNEL_RXTX_CHOICES, value)
                 elif name == "scan_add":
-                    raw[3] = (raw[3] & 0x7F) | (0x80 if value else 0x00)
+                    rec.scan_add = 1 if value else 0
                 elif name == "dmr_id_select":
                     if is_digital:
-                        raw[0] = (
-                            (raw[0] & 0xF7) | (
-                                _safe_choice_index(
-                                    CHANNEL_ID_SELECT_CHOICES,
-                                    value) << 3))
+                        rec.id_select = _safe_choice_index(
+                            CHANNEL_ID_SELECT_CHOICES, value)
                 elif name == "dmr_mode":
                     if is_digital:
-                        raw[0] = (
-                            (raw[0] & 0xFB) | (
-                                _safe_choice_index(
-                                    CHANNEL_DMR_MODE_CHOICES,
-                                    value) << 2))
+                        rec.dmr_mode = _safe_choice_index(
+                            CHANNEL_DMR_MODE_CHOICES, value)
                 elif name == "time_slot":
                     if is_digital:
-                        raw[0] = (
-                            (raw[0] & 0xFD) |
-                            ((0 if str(value) == "1" else 1) << 1))
+                        rec.time_slot = 0 if str(value) == "1" else 1
                 elif name == "color_code":
                     if is_digital:
-                        raw[1] = (raw[1] & 0x0F) | ((int(value) & 0x0F) << 4)
+                        rec.color_code = int(value) & 0x0F
                 elif name == "digital_monitor":
                     if is_digital:
-                        raw[0] = (raw[0] & 0xFE) | (0x01 if value else 0x00)
+                        rec.digital_monitor = 1 if value else 0
                 elif name == "call_priority":
                     if is_digital:
-                        raw[3] = (
-                            (raw[3] & 0x9F) |
-                            (_safe_choice_index(CHANNEL_CALL_PRIORITY_CHOICES,
-                                                value) << 5))
+                        rec.call_priority = _safe_choice_index(
+                            CHANNEL_CALL_PRIORITY_CHOICES, value)
                 elif name == "admit_criteria":
                     if is_digital:
-                        raw[3] = (raw[3] & 0x9F) | ((int(value) & 0x03) << 5)
+                        rec.call_priority = int(value) & 0x03
                 elif name == "tot_index":
-                    raw[2] = (raw[2] & 0xC0) | (int(value) & 0x3F)
+                    rec.tot = int(value) & 0x3F
                 elif name == "contact_index":
                     if is_digital:
-                        _set_u16le(raw, 17, int(value))
+                        rec.contact_index = int(value)
                 elif name == "rx_group_index":
                     if is_digital:
-                        raw[19] = int(value) & 0xFF
+                        rec.rx_group_index = int(value) & 0xFF
                 elif name == "encryption_index":
                     if is_digital:
-                        _set_u16le(raw, 20, int(value))
+                        rec.encryption_index = int(value)
                 elif name == "channel_id":
                     if is_digital:
-                        _set_u32le(raw, 22, _int_to_bcd(int(value)))
+                        rec.channel_id = _int_to_bcd(int(value))
                 elif name == "ctdcs_select":
-                    raw[4] = (
-                        (raw[4] & 0xF1) |
-                        (_safe_choice_index(CHANNEL_CTDCS_SELECT_CHOICES,
-                                            value) << 1))
+                    rec.ctdcs_select = _safe_choice_index(
+                        CHANNEL_CTDCS_SELECT_CHOICES, value)
                 elif name == "signaling_id_hex":
-                    _set_u32le(raw, 26, int(str(value), 16)
-                               & SIGNALING_ID_MASK)
+                    rec.signaling_id = (
+                        int(str(value), 16) & SIGNALING_ID_MASK)
                 elif name == "analog_bcl":
                     if not is_digital:
-                        raw[3] = (
-                            (raw[3] & 0xE7) |
-                            (_safe_choice_index(CHANNEL_TX_PRIORITY_CHOICES,
-                                                value) << 3))
+                        rec.tx_priority = _safe_choice_index(
+                            CHANNEL_TX_PRIORITY_CHOICES, value)
                 elif name == "amfm":
                     if not is_digital:
-                        raw[4] = (
-                            (raw[4] & 0xCF) | (
-                                _safe_choice_index(
-                                    CHANNEL_AMFM_CHOICES,
-                                    value) << 4))
+                        rec.amfm = _safe_choice_index(
+                            CHANNEL_AMFM_CHOICES, value)
                 elif name == "tail_tone":
                     if not is_digital:
-                        raw[3] = (
-                            (raw[3] & 0xF8) | _safe_choice_index(
-                                CHANNEL_TAIL_TONE_CHOICES, value))
+                        rec.tail_tone = _safe_choice_index(
+                            CHANNEL_TAIL_TONE_CHOICES, value)
                 elif name == "analog_scramble":
                     if not is_digital:
-                        raw[1] = (
-                            (raw[1] & 0xF0) | _safe_choice_index(
-                                CHANNEL_SCRAMBLE_CHOICES, value))
+                        rec.scramble = _safe_choice_index(
+                            CHANNEL_SCRAMBLE_CHOICES, value)
                 elif name == "bandwidth":
                     if not is_digital:
-                        raw[4] = (
-                            (raw[4] & 0x3F) | (
-                                _safe_choice_index(
-                                    CHANNEL_BAND_CHOICES,
-                                    value) << 6))
+                        rec.bandwidth = _safe_choice_index(
+                            CHANNEL_BAND_CHOICES, value)
 
         if is_digital:
-            raw[0] &= 0x3F
-            raw[1] = raw[1] & 0xF0
+            rec.channel_type = 0
+            rec.scramble = 0
         else:
-            raw[0] = (raw[0] & 0x3F) | 0x40
+            rec.channel_type = 1
             if mem.mode not in ("FM", "NFM"):
                 mem.mode = "FM"
-            self._set_analog_memory(mem, raw)
-
-        return raw
+            self._set_analog_memory(mem, rec)
 
     def set_memory(self, mem):
-        raw = self._encode_memory_record(mem)
-        if isinstance(mem.number, str) or mem.number < 0:
-            self._write_vfo_record(mem.number, raw)
-        else:
-            self._write_channel(mem.number, raw)
+        self._encode_memory_record(mem)
 
     def _append_bool_setting(self, group, name, label, current):
         group.append(RadioSetting(
